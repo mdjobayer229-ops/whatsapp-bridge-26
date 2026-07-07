@@ -2,7 +2,8 @@ if (!globalThis.crypto) globalThis.crypto = require('crypto').webcrypto;
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  fetchLatestWaWebVersion
 } = require('@whiskeysockets/baileys');
 const axios = require('axios');
 const QRCode = require('qrcode');
@@ -22,8 +23,11 @@ async function startBot() {
   console.log('Starting WhatsApp AI Bridge...');
 
   const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+  const { version } = await fetchLatestWaWebVersion();
+  console.log(`Using WhatsApp Web version: ${version.join('.')}`);
 
   const sock = makeWASocket({
+    version: version,
     auth: state,
     printQRInTerminal: false,
     defaultQueryTimeoutMs: 60000,
