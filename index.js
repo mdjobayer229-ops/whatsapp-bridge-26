@@ -23,12 +23,20 @@ async function startBot() {
   console.log('Starting WhatsApp AI Bridge...');
 
   const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-  const { version } = await fetchLatestWaWebVersion();
-  console.log(`Using WhatsApp Web version: ${version.join('.')}`);
+  let version;
+  try {
+    const v = await fetchLatestWaWebVersion();
+    version = v.version;
+    console.log(`Using WhatsApp Web version: ${version.join('.')}`);
+  } catch (e) {
+    version = [2, 3000, 1033893291];
+    console.log(`Version fetch failed, using fallback: ${version.join('.')}`);
+  }
 
   const sock = makeWASocket({
     version: version,
     auth: state,
+    browser: ['Chrome', 'macOS', '10.15.7'],
     printQRInTerminal: false,
     defaultQueryTimeoutMs: 60000,
     logger: require('pino')({ level: 'warn' }),
