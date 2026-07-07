@@ -146,12 +146,18 @@ async function startBot() {
           sender: sender
         }, { timeout: 30000 });
         const reply = res.data?.reply || res.data?.message || 'Sorry, I could not process that.';
+        const typingMs = Math.min(4000, Math.max(1500, reply.length * 50));
+        const delay = Math.round(typingMs * (0.7 + Math.random() * 0.6));
+        await sock.sendPresenceUpdate('composing', from);
+        await new Promise(r => setTimeout(r, delay));
         await sock.sendMessage(from, { text: reply });
         console.log(`[OUT] ${from}: ${reply.slice(0, 80)}`);
       } catch (err) {
         const errMsg = err.response?.data?.message || err.message || 'Unknown error';
         console.error(`[ERR] ${from}: ${errMsg}`);
         try {
+          await sock.sendPresenceUpdate('composing', from);
+          await new Promise(r => setTimeout(r, 1200 + Math.round(Math.random() * 800)));
           await sock.sendMessage(from, {
             text: 'Sorry, I am having trouble connecting to my brain. Please try again in a moment.'
           });
