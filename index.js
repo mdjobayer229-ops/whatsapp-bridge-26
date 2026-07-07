@@ -145,7 +145,7 @@ async function startBot() {
           conversation_id: from,
           sender: sender
         }, { timeout: 30000 });
-        const reply = res.data?.reply || 'Sorry, I could not process that.';
+        const reply = res.data?.reply || res.data?.message || 'Sorry, I could not process that.';
         await sock.sendMessage(from, { text: reply });
         console.log(`[OUT] ${from}: ${reply.slice(0, 80)}`);
       } catch (err) {
