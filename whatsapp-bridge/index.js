@@ -62,7 +62,8 @@ ${!bridgeConnected ? '<div class="instructions"><strong>How to connect:</strong>
     }
   }).listen(port, () => {
     console.log(`\n🌐 Web UI: http://localhost:${port}`);
-    console.log(`📱 Open your Fly.io app URL in browser to scan QR.\n`);
+    console.log(`📱 Open Railway Dashboard → Settings → Public Networking → Generate Domain`);
+    console.log(`   Then open that URL in your browser to scan QR.\n`);
   });
 }
 
@@ -94,7 +95,7 @@ async function startBot() {
       bridgeConnected = false;
       try {
         qrBuffer = await QRCode.toBuffer(qr, { width: 400, margin: 2, type: 'png' });
-        console.log('\n✅ QR code generated. Open Fly.io app URL in browser to scan.\n');
+        console.log('\n✅ QR code generated. Open Railway URL in browser to scan.\n');
       } catch (_) {
         console.log('QR buffer failed');
       }
