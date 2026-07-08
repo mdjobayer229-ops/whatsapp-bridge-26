@@ -146,7 +146,7 @@ async function startBot() {
           from: from,
           conversation_id: from,
           sender: sender
-        }, { timeout: 30000 });
+        }, { timeout: 65000 });
         const reply = res.data?.reply || res.data?.message || 'Sorry, I could not process that.';
         const typingMs = Math.min(4000, Math.max(1500, reply.length * 50));
         const delay = Math.round(typingMs * (0.7 + Math.random() * 0.6));
