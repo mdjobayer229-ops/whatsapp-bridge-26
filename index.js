@@ -1,5 +1,6 @@
 if (!globalThis.crypto) globalThis.crypto = require('crypto').webcrypto;
 const http = require('http');
+const fs = require('fs');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -12,32 +13,100 @@ const WP_API = process.env.WP_API_URL || 'https://jobayergroup.com/wp-json/ai-ro
 const PHONE = process.env.WHATSAPP_PHONE || '880130585531';
 const AUTH_DIR = process.env.AUTH_DIR || 'auth_info';
 const MAX_RECONNECT_DELAY = 300000;
+const LOG_MAX = 200;
+
 let reconnectAttempts = 0;
 let pairingRequested = false;
 let qrBuffer = null;
 let bridgeConnected = false;
+const logs = [];
+
+function log(level, msg) {
+  const line = `[${new Date().toISOString()}] [${level}] ${msg}`;
+  console.log(line);
+  logs.unshift(line);
+  if (logs.length > LOG_MAX) logs.length = LOG_MAX;
+}
+
+function logInfo(msg) { log('INFO', msg); }
+function logWarn(msg) { log('WARN', msg); }
+function logError(msg) { log('ERR', msg); }
 
 function getDelay() {
   reconnectAttempts++;
   const d = Math.min(1000 * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
-  console.log(`Reconnecting in ${Math.round(d / 1000)}s (attempt ${reconnectAttempts})...`);
+  logInfo(`Reconnecting in ${Math.round(d / 1000)}s (attempt ${reconnectAttempts})...`);
   return d;
 }
 
 function startServer() {
   const port = process.env.PORT || 8080;
-  http.createServer((req, res) => {
+  http.createServer(async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
     if (req.url === '/qr' && qrBuffer) {
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache' });
       res.end(qrBuffer);
     } else if (req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ connected: bridgeConnected }));
+      res.end(JSON.stringify({ connected: bridgeConnected, uptime: process.uptime() }));
+    } else if (req.url === '/logs') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(logs.slice(0, 100)));
+    } else if (req.url === '/env') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        WP_API,
+        PHONE,
+        AUTH_DIR,
+        NODE_VERSION: process.version,
+        HAS_AUTH_DIR: fs.existsSync(AUTH_DIR),
+        AUTH_FILES: fs.existsSync(AUTH_DIR) ? fs.readdirSync(AUTH_DIR).length : 0,
+      }));
+    } else if (req.url === '/test' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const testMsg = payload.message || 'test from bridge';
+          const res2 = await axios.post(WP_API, {
+            message: testMsg,
+            from: 'test@s.whatsapp.net',
+            conversation_id: 'test',
+            sender: 'bridge-test'
+          }, { timeout: 30000 });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, webhookResponse: res2.data, status: res2.status }));
+        } catch (err) {
+          const detail = err.response ? { status: err.response.status, data: err.response.data } : { message: err.message };
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: detail }));
+        }
+      });
     } else if (req.url === '/clear-pairing' && req.method === 'POST') {
       pairingRequested = false;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+    } else if (req.url === '/reset' && req.method === 'POST') {
+      logInfo('Manual reset requested');
+      try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (_) {}
+      pairingRequested = false;
+      qrBuffer = null;
+      bridgeConnected = false;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: 'Auth cleared. Restarting...' }));
+      setTimeout(() => process.exit(0), 500);
     } else {
+      const statusClass = bridgeConnected ? 'connected' : 'waiting';
+      const statusText = bridgeConnected ? '✅ Connected' : '⏳ Waiting for QR scan...';
+      const qrSection = bridgeConnected
+        ? '<p>The bridge is active and running 24/7.</p>'
+        : qrBuffer
+          ? '<img src="/qr" alt="QR Code"><p>Scan this QR code with WhatsApp to connect</p><p class="small">QR refreshes automatically if it expires</p>'
+          : '<p>Generating QR code... Please refresh in a few seconds.</p>';
+      const instructions = !bridgeConnected
+        ? '<div class="instructions"><strong>How to connect:</strong><ol><li>Open WhatsApp on your phone</li><li>Tap <strong>⋮ → Linked devices → Link a device</strong></li><li>Scan the QR code above with your phone</li><li>Done! The bridge will be active 24/7</li></ol></div>'
+        : '';
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -52,27 +121,34 @@ h1{color:#075e54;font-size:28px}img{max-width:100%;width:400px;border-radius:12p
 .small{color:#888;font-size:13px;margin-top:30px}
 </style></head><body>
 <h1>WhatsApp AI Bridge</h1>
-<p class="status ${bridgeConnected?'connected':'waiting'}">${bridgeConnected?'✅ Connected':'⏳ Waiting for QR scan...'}</p>
-${bridgeConnected ? '<p>The bridge is active and running 24/7.</p>' :
- qrBuffer ? '<img src="/qr" alt="QR Code"><p>Scan this QR code with WhatsApp to connect</p><p class="small">QR refreshes automatically if it expires</p>' :
- '<p>Generating QR code... Please refresh in a few seconds.</p>'}
-${!bridgeConnected ? '<div class="instructions"><strong>How to connect:</strong><ol><li>Open WhatsApp on your phone</li><li>Tap <strong>⋮ → Linked devices → Link a device</strong></li><li>Scan the QR code above with your phone</li><li>Done! The bridge will be active 24/7</li></ol></div>' : ''}
+<p class="status ${statusClass}">${statusText}</p>
+${qrSection}
+${instructions}
+<div style="margin-top:20px">
+  <a href="/health" style="margin:0 10px">/health</a>
+  <a href="/env" style="margin:0 10px">/env</a>
+  <a href="/logs" style="margin:0 10px">/logs</a>
+  <a href="/test" style="margin:0 10px">POST /test</a>
+</div>
 <p class="small">WhatsApp AI Bridge &mdash; jobayergroup.com</p>
 </body></html>`);
     }
   }).listen(port, () => {
-    console.log(`\n🌐 Web UI: http://localhost:${port}`);
-    console.log(`📱 Open Railway Dashboard → Settings → Public Networking → Generate Domain`);
-    console.log(`   Then open that URL in your browser to scan QR.\n`);
+    logInfo(`Web UI: http://localhost:${port}`);
+    logInfo(`WP_API: ${WP_API}`);
+    logInfo(`AUTH_DIR: ${AUTH_DIR} (exists: ${fs.existsSync(AUTH_DIR)})`);
+    logInfo(`PHONE: ${PHONE}`);
+    logInfo(`Open Railway Dashboard → Settings → Public Networking → Generate Domain`);
+    logInfo(`Then open that URL in your browser to scan QR.`);
   });
 }
 
 async function startBot() {
-  console.log('Starting WhatsApp AI Bridge...');
+  logInfo('Starting WhatsApp AI Bridge...');
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const version = [2, 3000, 1033893291];
-  console.log(`Using WhatsApp Web version: ${version.join('.')}`);
+  logInfo(`Using WhatsApp Web version: ${version.join('.')}`);
 
   const sock = makeWASocket({
     version: version,
@@ -96,15 +172,15 @@ async function startBot() {
       bridgeConnected = false;
       try {
         qrBuffer = await QRCode.toBuffer(qr, { width: 400, margin: 2, type: 'png' });
-        console.log('\n✅ QR code generated. Open Railway URL in browser to scan.\n');
+        logInfo('QR code generated');
       } catch (_) {
-        console.log('QR buffer failed');
+        logWarn('QR buffer generation failed');
       }
       if (!pairingRequested) {
         pairingRequested = true;
         try {
           const code = await sock.requestPairingCode(PHONE);
-          console.log(`📱 Pairing Code (backup): ${code}\n`);
+          logInfo(`Pairing Code (backup): ${code}`);
         } catch (_) {}
       }
     }
@@ -114,33 +190,35 @@ async function startBot() {
       bridgeConnected = true;
       pairingRequested = false;
       qrBuffer = null;
-      console.log('WhatsApp connected successfully!');
+      logInfo('WhatsApp connected successfully!');
     }
 
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode;
       if (reason === DisconnectReason.loggedOut) {
-        console.log('Logged out. Clearing auth_info and generating fresh QR...');
-        try { require('fs').rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (_) {}
+        logWarn('Logged out. Clearing auth_info and generating fresh QR...');
+        try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (_) {}
         pairingRequested = false;
         qrBuffer = null;
         return setTimeout(() => startBot(), 1000);
       }
-      console.log(`Disconnected (reason: ${reason}). Reconnecting...`);
+      logWarn(`Disconnected (reason: ${reason}). Reconnecting...`);
       setTimeout(() => startBot(), getDelay());
     }
   });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
-      if (msg.key.fromMe) continue;
-      if (!msg.message || msg.message.protocolMessage) continue;
-      const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || '';
-      if (!text.trim()) continue;
-      const from = msg.key.remoteJid;
-      const sender = msg.pushName || from.split('@')[0];
-      console.log(`[IN] ${sender} (${from}): ${text.slice(0, 80)}`);
       try {
+        if (!msg || !msg.key) continue;
+        if (msg.key.fromMe) continue;
+        if (!msg.message || msg.message.protocolMessage) continue;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || '';
+        if (!text || !text.trim()) continue;
+        const from = msg.key.remoteJid;
+        const sender = msg.pushName || (from ? from.split('@')[0] : 'unknown');
+        if (!from) continue;
+        logInfo(`[IN] ${sender} (${from}): ${text.slice(0, 80)}`);
         const res = await axios.post(WP_API, {
           message: text,
           from: from,
@@ -153,18 +231,19 @@ async function startBot() {
         await sock.sendPresenceUpdate('composing', from);
         await new Promise(r => setTimeout(r, delay));
         await sock.sendMessage(from, { text: reply });
-        console.log(`[OUT] ${from}: ${reply.slice(0, 80)}`);
+        logInfo(`[OUT] ${from}: ${reply.slice(0, 80)}`);
       } catch (err) {
         const errMsg = err.response?.data?.message || err.message || 'Unknown error';
-        console.error(`[ERR] ${from}: ${errMsg}`);
+        const statusCode = err.response?.status || '';
+        logError(`${statusCode ? 'HTTP ' + statusCode + ' ' : ''}${from || 'unknown'}: ${errMsg}`);
         try {
           await sock.sendPresenceUpdate('composing', from);
           await new Promise(r => setTimeout(r, 1200 + Math.round(Math.random() * 800)));
           await sock.sendMessage(from, {
-            text: 'Sorry, I am having trouble connecting to my brain. Please try again in a moment.'
+            text: 'দয়া করে একটু অপেক্ষা করুন। আমি এখনই ফিরে আসছি।'
           });
         } catch (sendErr) {
-          console.error('Failed to send error message:', sendErr.message);
+          logError(`Failed to send error message: ${sendErr.message}`);
         }
       }
     }
@@ -172,13 +251,15 @@ async function startBot() {
 
   setInterval(() => {
     if (sock?.ws?.readyState === 1) {
-      console.log('Heartbeat OK, connected:', !!sock.user);
+      logInfo('Heartbeat OK, connected: ' + !!sock.user);
+    } else {
+      logWarn('Heartbeat: WebSocket not ready');
     }
   }, 60000);
 }
 
 startServer();
 startBot().catch(err => {
-  console.error('Fatal error:', err);
+  logError(`Fatal error: ${err.message}`);
   process.exit(1);
 });
